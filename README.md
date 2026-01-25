@@ -1,12 +1,10 @@
 # Ralph Loop
 
-CLI utility and shell scripts for running AI agent loops (Opencode, Claude, and Cursor) to work through task queues defined in `tasks_list.json`.
+CLI utility for running AI agent loops (Opencode, Claude, and Cursor) to work through task queues defined in `tasks_list.json`.
 
-## Python CLI Utility (Recommended)
+The `ralph-loop` CLI utility provides a unified interface for running agent loops with configuration management.
 
-The Python CLI utility (`ralph-loop`) provides a unified interface for running agent loops with configuration management.
-
-### Installation
+## Installation
 
 #### Standard User Installation (recommended)
 
@@ -126,30 +124,6 @@ View current configuration:
 ```bash
 ralph-loop config
 ```
-
-## Shell Scripts (Legacy)
-
-The shell scripts in this directory provide the same functionality for users who prefer bash scripts.
-
-### Prerequisites
-
-- [`jq`](https://stedolan.github.io/jq/) must be installed and available on `PATH`.
-- The repository should be checked out at the root level so the scripts can locate `CLAUDE.md` and `.ralph/tasks_list.json`.
-
-### Usage
-
-Each script shares the same interface:
-
-```bash
-.ralph/run_opencode_loop.sh [iterations]
-.ralph/run_claude_loop.sh [iterations]
-.ralph/run_cursor_agent_loop.sh [iterations]
-```
-
-- `iterations` (optional): positive integer that overrides the iteration count. When omitted, the scripts run once per task where `passes` is `false`.
-- `--help`: prints usage information and exits.
-
-The scripts verify that `tasks_list.json` exists, count incomplete tasks, and invoke the respective agent command with a consistent instruction set. They also handle `SIGINT`/`SIGTERM` and report the number of completed iterations if interrupted.
 
 ## Task Guidelines
 
