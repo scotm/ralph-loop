@@ -1,0 +1,37 @@
+[project]
+name = "ralph-loop"
+version = "0.1.0"
+description = "CLI utility for running AI agent loops on task queues"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "typer>=0.12.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[project.scripts]
+ralph-loop = "ralph_loop.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "pytest-mock>=3.14.0",
+    "typer[all]>=0.12.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=ralph_loop --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["ralph_loop"]
+omit = ["tests/*"]
