@@ -67,7 +67,7 @@ class RalphConfig(BaseSettings):
             command=[
                 "agent",
                 "--model",
-                "composer-1",
+                "composer-1.5",
                 "--sandbox",
                 "disabled",
                 "--force",
