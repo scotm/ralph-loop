@@ -156,22 +156,33 @@ def test_loop_runner_instructions_passed(mock_run: Mock, config: RalphConfig):
 
 
 @patch("ralph_loop.runner.subprocess.Popen")
-def test_loop_runner_streaming_mode(mock_popen: Mock, config: RalphConfig, sample_tasks_file: Path):
+def test_loop_runner_streaming_mode(
+    mock_popen: Mock, config: RalphConfig, sample_tasks_file: Path
+):
     """Test streaming mode for cursor-agent."""
     # Setup mock process for streaming
     mock_process = Mock()
-    mock_process.stdout = iter([
-        '{"type": "system", "subtype": "init", "model": "composer-1"}\n',
-        '{"type": "assistant", "message": {"content": [{"text": "test"}]}}\n',
-        '{"type": "result", "duration_ms": 1000}\n',
-    ])
+    mock_process.stdout = iter(
+        [
+            '{"type": "system", "subtype": "init", "model": "composer-1"}\n',
+            '{"type": "assistant", "message": {"content": [{"text": "test"}]}}\n',
+            '{"type": "result", "duration_ms": 1000}\n',
+        ]
+    )
+    mock_process.poll.return_value = None  # Process is running during streaming
     mock_process.wait.return_value = 0
     mock_process.returncode = 0
     mock_popen.return_value = mock_process
 
     # Configure cursor-agent with streaming
     config.cursor_agent = AgentConfig(
-        command=["agent", "--output-format", "stream-json", "--stream-partial-output", "-p"],
+        command=[
+            "agent",
+            "--output-format",
+            "stream-json",
+            "--stream-partial-output",
+            "-p",
+        ],
         instructions="test instructions",
     )
 
@@ -186,15 +197,15 @@ def test_loop_runner_streaming_mode(mock_popen: Mock, config: RalphConfig, sampl
 def test_parse_stream_json():
     """Test JSON parsing from stream."""
     runner = LoopRunner(RalphConfig())
-    
+
     # Valid JSON
     result = runner._parse_stream_json('{"type": "test", "value": 123}\n')
     assert result == {"type": "test", "value": 123}
-    
+
     # Invalid JSON
     result = runner._parse_stream_json("not json\n")
     assert result is None
-    
+
     # Empty line
     result = runner._parse_stream_json("\n")
     assert result is None

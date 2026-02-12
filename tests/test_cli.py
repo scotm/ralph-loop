@@ -46,7 +46,7 @@ def test_run_command_invalid_agent(mock_get_config: Mock):
 
     result = runner.invoke(app, ["run", "invalid-agent"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Agent must be one of" in result.output
 
 
