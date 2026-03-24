@@ -67,7 +67,7 @@ class RalphConfig(BaseSettings):
             command=[
                 "agent",
                 "--model",
-                "composer-1.5",
+                "composer-2",
                 "--sandbox",
                 "disabled",
                 "--force",
@@ -99,7 +99,7 @@ class RalphConfig(BaseSettings):
 
     opencode: AgentConfig = Field(
         default=AgentConfig(
-            command=["opencode", "--model", "openai/gpt-5.1-codex-mini", "run"],
+            command=["opencode", "--model", "openai/gpt-5.3-codex", "run"],
             instructions="""Initial tasks
 
   - Run "pwd" to see the directory you are working in. You will only be able to edit files in this directory.
