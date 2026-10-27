@@ -2,12 +2,11 @@
 
 import sys
 from pathlib import Path
-from typing import Literal
 
 import typer
 from typer import Option
 
-from ralph_loop.config import RalphConfig, get_config
+from ralph_loop.config import AGENT_NAMES, AgentName, RalphConfig, get_config
 from ralph_loop.runner import LoopRunner
 
 app = typer.Typer(
@@ -17,17 +16,16 @@ app = typer.Typer(
 )
 
 
-def validate_agent(agent: str) -> Literal["claude", "cursor-agent", "opencode"]:
+def validate_agent(agent: str) -> AgentName:
     """Validate agent name."""
-    valid_agents = ["claude", "cursor-agent", "opencode"]
-    if agent not in valid_agents:
-        raise typer.BadParameter(f"Agent must be one of: {', '.join(valid_agents)}")
-    return agent  # type: ignore
+    if agent not in AGENT_NAMES:
+        raise typer.BadParameter(f"Agent must be one of: {', '.join(AGENT_NAMES)}")
+    return agent  # type: ignore[return-value]
 
 
 @app.command()
 def run(
-    agent: str = typer.Argument(..., help="Agent to run: claude, cursor-agent, or opencode"),
+    agent: str = typer.Argument(..., help=f"Agent to run: {', '.join(AGENT_NAMES)}"),
     iterations: int | None = Option(
         None,
         "--iterations",
