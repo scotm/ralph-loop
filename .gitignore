@@ -195,6 +195,9 @@ uv.lock
 # Project-specific
 # User-generated configuration file (can be recreated with --recreate)
 .ralph/ralph_config.json
+# Loop state is local to a run and must not be committed
+.ralph/tasks_list.json
+.ralph/progress_tasks.txt
 
 # Temporary files
 *.tmp

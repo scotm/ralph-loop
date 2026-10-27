@@ -155,6 +155,27 @@ def test_loop_runner_instructions_passed(mock_run: Mock, config: RalphConfig):
     assert "test instructions" in command
 
 
+def test_format_instructions_uses_configured_paths(config: RalphConfig):
+    """Configured task/progress paths are filled into the prompt."""
+    config.tasks_file = Path("state/tasks.json")
+    config.progress_file = Path("state/progress.txt")
+
+    instructions = LoopRunner(config)._format_instructions(
+        "read {tasks_file}, write {progress_file}, ignore {state_dir}, keep {other}"
+    )
+
+    assert instructions == "read state/tasks.json, write state/progress.txt, ignore state, keep {other}"
+
+
+def test_tasks_file_error_names_configured_path(tmp_path: Path):
+    """The missing-tasks error points at the configured path, not a root file."""
+    missing = tmp_path / "custom_tasks.json"
+    config = RalphConfig(tasks_file=missing)
+
+    with pytest.raises(FileNotFoundError, match=str(missing)):
+        LoopRunner(config).run("claude", 1)
+
+
 @patch("ralph_loop.runner.subprocess.Popen")
 def test_loop_runner_streaming_mode(
     mock_popen: Mock, config: RalphConfig, sample_tasks_file: Path
@@ -184,6 +205,7 @@ def test_loop_runner_streaming_mode(
             "-p",
         ],
         instructions="test instructions",
+        streaming=True,
     )
 
     runner = LoopRunner(config)
@@ -192,6 +214,43 @@ def test_loop_runner_streaming_mode(
     # Verify Popen was called (not subprocess.run)
     mock_popen.assert_called_once()
     mock_process.wait.assert_called_once()
+
+
+@patch("ralph_loop.runner.subprocess.run")
+def test_output_format_text_does_not_enable_streaming(mock_run: Mock, config: RalphConfig):
+    """A non-stream-json output format keeps the plain subprocess path."""
+    mock_run.return_value = Mock(returncode=0)
+    config.cursor_agent = AgentConfig(
+        command=["agent", "--output-format", "text", "-p"],
+        instructions="test instructions",
+    )
+
+    LoopRunner(config).run("cursor-agent", 1)
+
+    mock_run.assert_called_once()
+
+
+@patch("ralph_loop.runner.subprocess.Popen")
+def test_streaming_is_decided_by_config_not_agent_name(
+    mock_popen: Mock, config: RalphConfig
+):
+    """Any agent can opt into streaming via its config."""
+    mock_process = Mock()
+    mock_process.stdout = iter([""])
+    mock_process.poll.return_value = None
+    mock_process.wait.return_value = 0
+    mock_process.returncode = 0
+    mock_popen.return_value = mock_process
+
+    config.claude = AgentConfig(
+        command=["claude", "--output-format", "stream-json", "-p"],
+        instructions="test instructions",
+        streaming=True,
+    )
+
+    LoopRunner(config).run("claude", 1)
+
+    mock_popen.assert_called_once()
 
 
 def test_parse_stream_json():

@@ -5,9 +5,8 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Literal
 
-from ralph_loop.config import AgentConfig, RalphConfig
+from ralph_loop.config import AgentConfig, AgentName, RalphConfig
 from ralph_loop.tasks import TasksFile
 
 
@@ -40,9 +39,9 @@ class LoopRunner:
             return None
 
     def _handle_streaming_output(
-        self, process: subprocess.Popen[str], agent: Literal["claude", "cursor-agent", "opencode"], command: list[str]
+        self, process: subprocess.Popen[str], command: list[str]
     ) -> int:
-        """Handle streaming output for cursor-agent with real-time progress."""
+        """Handle streaming output for agents configured with stream-json."""
         accumulated_text = ""
         tool_count = 0
         start_time = time.time()
@@ -133,18 +132,24 @@ class LoopRunner:
 
         return process.returncode or 0
 
-    def _run_agent(
-        self, agent_config: AgentConfig, instructions: str, agent: Literal["claude", "cursor-agent", "opencode"]
-    ) -> int:
-        """Run a single agent iteration."""
-        command = agent_config.command + [instructions]
+    def _format_instructions(self, instructions: str) -> str:
+        """Fill configured task/progress paths into the instruction template."""
+        replacements = {
+            "tasks_file": str(self.config.tasks_file),
+            "progress_file": str(self.config.progress_file),
+            "state_dir": str(self.config.tasks_file.parent),
+        }
+        for key, value in replacements.items():
+            instructions = instructions.replace(f"{{{key}}}", value)
+        return instructions
 
-        # Check if this is cursor-agent with streaming enabled
-        is_streaming = agent == "cursor-agent" and "--output-format" in agent_config.command
+    def _run_agent(self, agent_config: AgentConfig, instructions: str) -> int:
+        """Run a single agent iteration."""
+        command = agent_config.command + [self._format_instructions(instructions)]
 
         try:
-            if is_streaming:
-                # Use streaming mode for cursor-agent
+            if agent_config.streaming:
+                # Use streaming mode for agents configured with stream-json output
                 process = subprocess.Popen(
                     command,
                     stdout=subprocess.PIPE,
@@ -152,7 +157,7 @@ class LoopRunner:
                     text=True,
                     bufsize=1,  # Line buffered
                 )
-                return self._handle_streaming_output(process, agent, command)
+                return self._handle_streaming_output(process, command)
             else:
                 # Standard mode for other agents
                 result = subprocess.run(
@@ -171,7 +176,7 @@ class LoopRunner:
 
     def run(
         self,
-        agent: Literal["claude", "cursor-agent", "opencode"],
+        agent: AgentName,
         iterations: int | None = None,
     ) -> None:
         """Run the agent loop for specified iterations."""
@@ -179,7 +184,7 @@ class LoopRunner:
         if not self.tasks_file.exists():
             raise FileNotFoundError(
                 f"Tasks file not found: {self.config.tasks_file}. "
-                "Please ensure tasks_list.json exists."
+                f"Please create {self.config.tasks_file} or set tasks_file in the config."
             )
 
         # Count incomplete tasks
@@ -187,7 +192,7 @@ class LoopRunner:
 
         if incomplete_count == 0:
             print(
-                "No incomplete tasks found in tasks_list.json (all items have passes: true)\n"
+                f"No incomplete tasks found in {self.config.tasks_file} (all items have passes: true)\n"
                 "Nothing to do. Exiting."
             )
             return
@@ -213,9 +218,9 @@ class LoopRunner:
                     break
 
                 print(f"Iteration {i} of {iterations}")
-                self._run_agent(agent_config, agent_config.instructions, agent)
+                self._run_agent(agent_config, agent_config.instructions)
                 self.completed += 1
-                if agent != "cursor-agent" or "--output-format" not in agent_config.command:
+                if not agent_config.streaming:
                     print(f"Completed iteration {i}")
                 print("----------------------------------------")
         finally:

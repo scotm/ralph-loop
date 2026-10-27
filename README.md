@@ -118,6 +118,7 @@ This creates `.ralph/ralph_config.json` with default agent commands and instruct
 - Agent command paths and arguments
 - Instructions passed to each agent
 - File paths for tasks and progress files
+- The model each agent uses (the defaults omit `--model`, so each CLI uses its own configured default; add `--model` to pin one)
 
 View current configuration:
 
@@ -125,11 +126,31 @@ View current configuration:
 ralph-loop config
 ```
 
+### Upgrading from an older version
+
+Generated config files store the full prompt text, so new defaults in the code do not
+reach an existing `.ralph/ralph_config.json`. If `ralph-loop` warns that your config was
+created by an older version, run `ralph-loop config --recreate` to pick up the current
+defaults. Recreate overwrites customizations in that file.
+
+### Security tradeoff
+
+The default commands run agents unattended with permission prompts disabled:
+
+- Claude: `--dangerously-skip-permissions`
+- Cursor: `--force` and `--sandbox disabled`
+
+An agent can therefore edit files and run shell commands anywhere the `ralph-loop`
+process can reach, not only inside the repository. The "work only inside this repository"
+prompt is an instruction to the model, not an enforced boundary. Only run loops against
+repositories and task files you trust. To tighten the boundary, edit the generated
+command to drop these flags; expect interactive prompts to stall an unattended loop.
+
 ## Task Guidelines
 
-- Always update only the `passes` field of the task you finish; do not edit other fields in `tasks_list.json`.
-- Log a concise 3–4 line summary of your work in `progress_tasks.txt`.
-- Pick the highest-priority outstanding task and focus on it until completion.
+- Always update only the `passes` field of the task you finish; do not edit other fields in `.ralph/tasks_list.json`.
+- Log a concise 3–4 line summary of your work in `.ralph/progress_tasks.txt`.
+- Pick the first outstanding task in file order and focus on it until completion.
 
 ## Development
 
