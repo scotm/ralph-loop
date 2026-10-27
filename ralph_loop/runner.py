@@ -10,6 +10,82 @@ from typing import Literal
 from ralph_loop.config import AgentConfig, RalphConfig
 from ralph_loop.tasks import TasksFile
 
+_TOOL_ARG_KEYS = ("command", "pattern", "path", "query", "url", "description", "prompt")
+
+
+def _tool_call_entry(tool_call: dict) -> tuple[str, dict]:
+    """Return the tool name and a payload with ``args``/``result`` keys."""
+    for key, value in tool_call.items():
+        if isinstance(value, dict) and key.endswith("ToolCall"):
+            return key[: -len("ToolCall")], value
+
+    function = tool_call.get("function")
+    if isinstance(function, dict):
+        args = function.get("arguments", {})
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = {"command": args}
+        return str(function.get("name", "tool")), {
+            "args": args if isinstance(args, dict) else {},
+            "result": function.get("result", {}),
+        }
+
+    return "tool", {}
+
+
+def _tool_call_summary(payload: dict) -> str:
+    """Pick the most useful argument for a one-line tool description."""
+    args = payload.get("args")
+    if not isinstance(args, dict):
+        return ""
+    for key in _TOOL_ARG_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value:
+            return value if len(value) <= 120 else value[:117] + "..."
+    return ""
+
+
+def _tool_call_result(payload: dict) -> str:
+    """Reduce a tool result to a short human-readable line."""
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return "done"
+
+    if "rejected" in result:
+        rejected = result["rejected"] if isinstance(result["rejected"], dict) else {}
+        return f"rejected ({rejected.get('reason') or 'not permitted'})"
+
+    if "error" in result:
+        error = result["error"]
+        if isinstance(error, dict):
+            error = error.get("message") or error.get("error") or "unknown error"
+        return f"failed: {error}"
+
+    success = result.get("success")
+    if not isinstance(success, dict):
+        return "done"
+
+    if "exitCode" in success:
+        lines = len((success.get("stdout") or "").splitlines())
+        return f"exit {success['exitCode']}, {lines} output line(s)"
+    if "linesAdded" in success or "linesRemoved" in success:
+        return f"edited (+{success.get('linesAdded', 0)}/-{success.get('linesRemoved', 0)} lines)"
+    if "linesCreated" in success:
+        return f"wrote {success['linesCreated']} line(s), {success.get('fileSize', 0)} bytes"
+    if "totalLines" in success:
+        return f"read {success['totalLines']} line(s)"
+    if "workspaceResults" in success:
+        matched = sum(
+            ((workspace or {}).get("content") or {}).get("totalMatchedLines", 0)
+            for workspace in (success.get("workspaceResults") or {}).values()
+        )
+        return f"{matched} match(es)"
+    if "content" in success:
+        return f"{len((success.get('content') or '').splitlines())} line(s)"
+    return "done"
+
 
 class LoopRunner:
     """Manages execution of agent loops."""
@@ -42,10 +118,30 @@ class LoopRunner:
     def _handle_streaming_output(
         self, process: subprocess.Popen[str], agent: Literal["claude", "cursor-agent", "opencode"], command: list[str]
     ) -> int:
-        """Handle streaming output for cursor-agent with real-time progress."""
-        accumulated_text = ""
+        """Handle every cursor-agent stream event and show it as it arrives."""
+        generated_chars = 0
         tool_count = 0
         start_time = time.time()
+        line_open = False
+        message_streamed = False
+        thinking_open = False
+        dim = "\033[2m" if sys.stdout.isatty() else ""
+        reset = "\033[0m" if dim else ""
+
+        def end_line() -> None:
+            nonlocal line_open
+            if line_open:
+                print()
+                line_open = False
+
+        def end_thinking() -> None:
+            nonlocal thinking_open
+            if thinking_open:
+                thinking_open = False
+                if reset:
+                    sys.stdout.write(reset)
+                    sys.stdout.flush()
+                end_line()
 
         if process.stdout is None:
             raise RuntimeError("Process stdout is not available")
@@ -58,73 +154,85 @@ class LoopRunner:
 
                 data = self._parse_stream_json(line)
                 if not data:
-                    # Skip non-JSON lines (might be error messages or other output)
+                    # Non-JSON output (stderr warnings, CLI errors) is still useful.
+                    if line.strip():
+                        end_thinking()
+                        end_line()
+                        print(line.rstrip())
                     continue
 
                 event_type = data.get("type", "")
                 subtype = data.get("subtype", "")
 
                 if event_type == "system" and subtype == "init":
-                    model = data.get("model", "unknown")
-                    print(f"🤖 Using model: {model}")
+                    end_thinking()
+                    end_line()
+                    print(f"🤖 Using model: {data.get('model', 'unknown')}")
+
+                elif event_type == "thinking":
+                    text = data.get("text", "")
+                    if subtype == "delta" and text:
+                        if not thinking_open:
+                            end_line()
+                            print("💭 ", end="", flush=True)
+                            thinking_open = True
+                        sys.stdout.write(f"{dim}{text}{reset}")
+                        sys.stdout.flush()
+                        line_open = not text.endswith("\n")
+                    elif subtype == "completed":
+                        end_thinking()
 
                 elif event_type == "assistant":
-                    # Accumulate incremental text deltas for smooth progress
-                    message = data.get("message", {})
-                    content = message.get("content", [])
-                    if content and isinstance(content[0], dict):
-                        text = content[0].get("text", "")
-                        if text:
-                            accumulated_text += text
-                            # Show live progress (updates with each character delta)
-                            print(f"\r📝 Generating: {len(accumulated_text)} chars", end="", flush=True)
+                    parts = (data.get("message") or {}).get("content") or []
+                    text = "".join(
+                        part.get("text", "")
+                        for part in parts
+                        if isinstance(part, dict) and part.get("type", "text") == "text"
+                    )
+                    if not text:
+                        continue
+
+                    end_thinking()
+                    # stream-json without --stream-partial-output sends finished
+                    # messages; with it, deltas repeat in the final flush.
+                    is_delta = bool(data.get("timestamp_ms")) and not data.get("model_call_id")
+                    if is_delta or not message_streamed:
+                        sys.stdout.write(text)
+                        sys.stdout.flush()
+                        generated_chars += len(text)
+                        line_open = not text.endswith("\n")
+                    message_streamed = is_delta
 
                 elif event_type == "tool_call":
+                    name, payload = _tool_call_entry(data.get("tool_call") or {})
                     if subtype == "started":
                         tool_count += 1
-                        tool_call = data.get("tool_call", {})
-
-                        # Check for writeToolCall
-                        if "writeToolCall" in tool_call:
-                            path = tool_call["writeToolCall"].get("args", {}).get("path", "unknown")
-                            print(f"\n🔧 Tool #{tool_count}: Creating {path}")
-
-                        # Check for readToolCall
-                        elif "readToolCall" in tool_call:
-                            path = tool_call["readToolCall"].get("args", {}).get("path", "unknown")
-                            print(f"\n📖 Tool #{tool_count}: Reading {path}")
-
+                        end_thinking()
+                        end_line()
+                        summary = _tool_call_summary(payload)
+                        print(f"🔧 {name}: {summary}" if summary else f"🔧 {name}")
                     elif subtype == "completed":
-                        tool_call = data.get("tool_call", {})
-
-                        # Check for writeToolCall result
-                        if "writeToolCall" in tool_call:
-                            result = tool_call["writeToolCall"].get("result", {})
-                            if "success" in result:
-                                success = result["success"]
-                                lines = success.get("linesCreated", 0)
-                                size = success.get("fileSize", 0)
-                                print(f" ✅ Created {lines} lines ({size} bytes)")
-
-                        # Check for readToolCall result
-                        elif "readToolCall" in tool_call:
-                            result = tool_call["readToolCall"].get("result", {})
-                            if "success" in result:
-                                success = result["success"]
-                                lines = success.get("totalLines", 0)
-                                print(f" ✅ Read {lines} lines")
+                        end_line()
+                        print(f"   ✅ {_tool_call_result(payload)}")
 
                 elif event_type == "result":
+                    end_thinking()
+                    end_line()
+                    if generated_chars == 0:
+                        text = data.get("result") or ""
+                        if text:
+                            print(text)
                     duration_ms = data.get("duration_ms", 0)
-                    end_time = time.time()
-                    total_time = int(end_time - start_time)
-                    print(f"\n\n🎯 Completed in {duration_ms}ms ({total_time}s total)")
-                    print(f"📊 Final stats: {tool_count} tools, {len(accumulated_text)} chars generated")
+                    total_time = int(time.time() - start_time)
+                    print(f"\n🎯 Completed in {duration_ms}ms ({total_time}s total)")
+                    print(f"📊 Final stats: {tool_count} tools, {generated_chars} chars generated")
         except KeyboardInterrupt:
             process.terminate()
             process.wait()
             raise
         finally:
+            end_thinking()
+            end_line()
             if process.poll() is None:  # Process still running
                 process.wait()
 
