@@ -79,10 +79,10 @@ Where `<agent>` is one of:
 - `cursor-agent` - Run Cursor agent (with real-time progress streaming)
 - `opencode` - Run Opencode agent
 
-**Note:** The `cursor-agent` option provides real-time progress tracking, showing:
-- Model being used
-- Character generation progress
-- Tool calls (file reads/writes) with line counts
+**Note:** The `cursor-agent` option streams the agent's full output in real time:
+- Model being used and live thinking summaries
+- Assistant text as it is generated
+- Every tool call (read, edit, shell, grep, etc.) with a result summary
 - Completion statistics
 
 Options:

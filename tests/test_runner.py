@@ -8,7 +8,12 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from ralph_loop.config import AgentConfig, RalphConfig
-from ralph_loop.runner import LoopRunner
+from ralph_loop.runner import (
+    LoopRunner,
+    _tool_call_entry,
+    _tool_call_result,
+    _tool_call_summary,
+)
 from ralph_loop.tasks import TasksFile
 
 
@@ -209,3 +214,194 @@ def test_parse_stream_json():
     # Empty line
     result = runner._parse_stream_json("\n")
     assert result is None
+
+
+def _streaming_runner(config: RalphConfig) -> LoopRunner:
+    """Configure a runner for cursor-agent streaming."""
+    config.cursor_agent = AgentConfig(
+        command=[
+            "agent",
+            "--output-format",
+            "stream-json",
+            "--stream-partial-output",
+            "-p",
+        ],
+        instructions="test instructions",
+    )
+    return LoopRunner(config)
+
+
+def _run_streaming(runner: LoopRunner, events: list[dict]) -> None:
+    """Run one iteration against the given stream events."""
+    lines = [json.dumps(event) + "\n" for event in events]
+    with patch("ralph_loop.runner.subprocess.Popen") as mock_popen:
+        process = Mock()
+        process.stdout = iter(lines)
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        process.returncode = 0
+        mock_popen.return_value = process
+        runner.run("cursor-agent", 1)
+
+
+def test_streaming_displays_full_agent_output(config: RalphConfig, capsys):
+    """Assistant text, thinking, tools, and results are all shown."""
+    _run_streaming(
+        _streaming_runner(config),
+        [
+            {"type": "system", "subtype": "init", "model": "composer-2"},
+            {"type": "thinking", "subtype": "delta", "text": "planning", "timestamp_ms": 1},
+            {"type": "thinking", "subtype": "completed", "timestamp_ms": 2},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Hello"}]},
+                "timestamp_ms": 3,
+            },
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": " world"}]},
+                "timestamp_ms": 4,
+            },
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Hello world"}]},
+            },
+            {
+                "type": "tool_call",
+                "subtype": "started",
+                "tool_call": {"shellToolCall": {"args": {"command": "ls -la"}}},
+            },
+            {
+                "type": "tool_call",
+                "subtype": "completed",
+                "tool_call": {
+                    "shellToolCall": {
+                        "args": {"command": "ls -la"},
+                        "result": {"success": {"exitCode": 0, "stdout": "a\nb\n"}},
+                    }
+                },
+            },
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Done."}]},
+            },
+            {"type": "result", "duration_ms": 10, "result": "Done."},
+        ],
+    )
+
+    out = capsys.readouterr().out
+    assert out.count("Hello world") == 1  # final flush is not duplicated
+    assert "planning" in out
+    assert "ls -la" in out
+    assert "exit 0, 2 output line(s)" in out
+    assert "Done." in out
+
+
+def test_streaming_skips_buffered_flush_before_tool_call(config: RalphConfig, capsys):
+    """The pre-tool-call flush repeats deltas and must be skipped."""
+    _run_streaming(
+        _streaming_runner(config),
+        [
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Hi"}]},
+                "timestamp_ms": 1,
+            },
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Hi"}]},
+                "timestamp_ms": 2,
+                "model_call_id": "call-1",
+            },
+            {
+                "type": "tool_call",
+                "subtype": "started",
+                "tool_call": {"readToolCall": {"args": {"path": "a.py"}}},
+            },
+            {"type": "result", "duration_ms": 5},
+        ],
+    )
+
+    out = capsys.readouterr().out
+    assert out.count("Hi") == 1
+    assert "a.py" in out
+
+
+def test_streaming_prints_complete_messages_without_partial_output(
+    config: RalphConfig, capsys
+):
+    """Without --stream-partial-output every finished message is shown."""
+    _run_streaming(
+        _streaming_runner(config),
+        [
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "First."}]},
+            },
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Second."}]},
+            },
+            {"type": "result", "duration_ms": 5},
+        ],
+    )
+
+    out = capsys.readouterr().out
+    assert "First." in out
+    assert "Second." in out
+
+
+def test_streaming_shows_non_json_output(config: RalphConfig, capsys):
+    """Stderr warnings are not silently dropped."""
+    lines = ["⚠ Workspace Trust Required\n"]
+    with patch("ralph_loop.runner.subprocess.Popen") as mock_popen:
+        process = Mock()
+        process.stdout = iter(lines)
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        process.returncode = 0
+        mock_popen.return_value = process
+        _streaming_runner(config).run("cursor-agent", 1)
+
+    assert "Workspace Trust Required" in capsys.readouterr().out
+
+
+def test_tool_call_helpers():
+    """Tool call shapes used by the Cursor CLI are summarized."""
+    name, payload = _tool_call_entry(
+        {
+            "editToolCall": {
+                "args": {"path": "x.py"},
+                "result": {"success": {"linesAdded": 2, "linesRemoved": 1}},
+            }
+        }
+    )
+    assert name == "edit"
+    assert _tool_call_summary(payload) == "x.py"
+    assert _tool_call_result(payload) == "edited (+2/-1 lines)"
+
+    name, payload = _tool_call_entry(
+        {"shellToolCall": {"args": {"command": "ls"}, "result": {"rejected": {"reason": "denied"}}}}
+    )
+    assert name == "shell"
+    assert _tool_call_result(payload) == "rejected (denied)"
+
+    name, payload = _tool_call_entry(
+        {
+            "grepToolCall": {
+                "args": {"pattern": "foo"},
+                "result": {
+                    "success": {"workspaceResults": {".": {"content": {"totalMatchedLines": 3}}}}
+                },
+            }
+        }
+    )
+    assert name == "grep"
+    assert _tool_call_summary(payload) == "foo"
+    assert _tool_call_result(payload) == "3 match(es)"
+
+    name, payload = _tool_call_entry(
+        {"function": {"name": "web", "arguments": '{"url": "https://x"}'}}
+    )
+    assert name == "web"
+    assert _tool_call_summary(payload) == "https://x"
